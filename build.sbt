@@ -1,30 +1,100 @@
 import sbt.Keys.libraryDependencies
-
 import scala.collection.Seq
 
+
 val scala3Version = "3.8.2"
+lazy val dispatchVersion = "2.0.0"
+
 
 lazy val root = project
   .in(file("."))
+  .enablePlugins(ScalaxbPlugin)
   .settings(
     name := "tlaplus-sany-to-ast",
     version := "0.1.0-SNAPSHOT",
     scalaVersion := scala3Version,
     libraryDependencies ++= Seq(
+      "org.scala-lang.modules" %% "scala-xml" % "2.4.0",
+      "org.scala-lang.modules" %% "scala-parser-combinators" % "2.4.0",
+      "org.dispatchhttp" %% "dispatch-core" % dispatchVersion,
+      "javax.xml.bind" % "jaxb-api" % "2.3.0",
       ("org.lamport" % "tla2tools" % "1.8.0")
         .intransitive()
         .from(
           "https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar"
         ),
       "org.scala-lang.modules" %% "scala-xml" % "2.2.0"
-    )
+    ),
+    Compile / scalaxb / scalaxbPackageName := "generated",
+    Compile / scalaxb / scalaxbDispatchVersion := dispatchVersion,
+
+    // tlaplusのxsdのvalueに\が入っていてgenerate結果が不正になコードになる問題のワークアラウンド
+    // 生成後 のファイルをエスケープするように直接書き換える
+    Compile / sourceGenerators += Def.task {
+      val _ = (Compile / scalaxb).value
+
+      val dir = (Compile / sourceManaged).value / "sbt-scalaxb" / "generated"
+      val files = Seq(dir / "sany.scala", dir / "xmlprotocol.scala").filter(_.exists)
+
+      val replacements = Seq(
+        "= \"\\lnot\""       -> "= \"\\\\lnot\"",
+        "= \"\\in\""         -> "= \"\\\\in\"",
+        "= \"\\union\""      -> "= \"\\\\union\"",
+        "= \"\\intersect\""  -> "= \"\\\\intersect\"",
+        "= \"\\subseteq\""   -> "= \"\\\\subseteq\"",
+        "= \"\\equiv\""      -> "= \"\\\\equiv\"",
+        "= \"\\land\""       -> "= \"\\\\land\"",
+        "= \"\\lor\""        -> "= \"\\\\lor\"",
+        "= \"\\cdot\""       -> "= \"\\\\cdot\"",
+        "= \"\\\""           -> "= \"\\\\\"",
+        "scala.xml.Text(\"\\lnot\")"      -> "scala.xml.Text(\"\\\\lnot\")",
+        "scala.xml.Text(\"\\in\")"        -> "scala.xml.Text(\"\\\\in\")",
+        "scala.xml.Text(\"\\union\")"     -> "scala.xml.Text(\"\\\\union\")",
+        "scala.xml.Text(\"\\intersect\")" -> "scala.xml.Text(\"\\\\intersect\")",
+        "scala.xml.Text(\"\\subseteq\")"  -> "scala.xml.Text(\"\\\\subseteq\")",
+        "scala.xml.Text(\"\\equiv\")"     -> "scala.xml.Text(\"\\\\equiv\")",
+        "scala.xml.Text(\"\\land\")"      -> "scala.xml.Text(\"\\\\land\")",
+        "scala.xml.Text(\"\\lor\")"       -> "scala.xml.Text(\"\\\\lor\")",
+        "scala.xml.Text(\"\\cdot\")"      -> "scala.xml.Text(\"\\\\cdot\")",
+        "scala.xml.Text(\"\\\")"          -> "scala.xml.Text(\"\\\\\")"
+      )
+
+      val replacements2 = Seq(
+        """case class Modules(RootModule: String,
+          |  context: generated.Context,
+          |  modules: Seq[generated.Modules] = Nil)""".stripMargin ->
+          """case class Modules(
+            |  RootModule: String,
+            |  context: generated.Context,
+            |  modules: Seq[generated.Modules | scalaxb.DataRecord[generated.ModulesOption]] = Nil
+            |)""".stripMargin,
+        """case class ModuleNode(nodeSequence1: generated.NodeSequence,
+          |  uniquename: String,
+          |  extendsValue: generated.Extends,
+          |  modulenode: Seq[generated.ModuleNode] = Nil) extends ModulesOption with EntryOption""".stripMargin ->
+        """case class ModuleNode(nodeSequence1: generated.NodeSequence,
+          |  uniquename: String,
+          |  extendsValue: generated.Extends,
+          |  modulenode: Seq[scalaxb.DataRecord[generated.AssumeNodeRef | generated.InstanceNode | generated.UseOrHideNode | generated.OpDeclNodeRef |  generated.OpDefNodeRefOption | generated.TheoremNodeRef]] = Nil) extends ModulesOption with EntryOption""".stripMargin
+      )
+
+      files.foreach { f =>
+        val s0 = IO.read(f)
+        val s1 = (replacements ++ replacements2).foldLeft(s0) { case (acc, (from, to)) =>
+          acc.replace(from, to)
+        }
+        if (s0 != s1) IO.write(f, s1)
+      }
+
+      files
+    }.taskValue
   )
 
 lazy val downloadSanyXsd = taskKey[Unit]("sany.xsdをdownloadする")
 
 downloadSanyXsd := {
   import scala.sys.process.*
-  val out = baseDirectory.value.absolutePath + "/src/main/resources/sany.xsd"
+  val out = baseDirectory.value.absolutePath + "/src/main/xsd/sany.xsd"
   println(s"output path: ${out}")
   val cmd = Seq(
     "curl",
