@@ -22,14 +22,16 @@ lazy val root = project
         .intransitive()
         .from(
           "https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar"
-        ),
-      "org.scala-lang.modules" %% "scala-xml" % "2.2.0"
+        )
     ),
     Compile / scalaxb / scalaxbPackageName := "generated",
     Compile / scalaxb / scalaxbDispatchVersion := dispatchVersion,
 
-    // tlaplusのxsdのvalueに\が入っていてgenerate結果が不正になコードになる問題のワークアラウンド
-    // 生成後 のファイルをエスケープするように直接書き換える
+    Compile / scalaxb := (Compile / scalaxb).dependsOn(downloadSanyXsd).value,
+
+    //work around:
+    // tlaplusのxsdのvalueに\が入っていてgenerate結果が不正になコードになる
+    // 暫定対応として生成後 のファイルをエスケープするように書き換える
     Compile / sourceGenerators += Def.task {
       val _ = (Compile / scalaxb).value
 
@@ -63,10 +65,9 @@ lazy val root = project
         """case class Modules(RootModule: String,
           |  context: generated.Context,
           |  modules: Seq[generated.Modules] = Nil)""".stripMargin ->
-          """case class Modules(
-            |  RootModule: String,
+          """case class Modules(RootModule: String,
             |  context: generated.Context,
-            |  modules: Seq[generated.Modules | scalaxb.DataRecord[generated.ModulesOption]] = Nil
+            |  modules: Seq[generated.Modules with scalaxb.DataRecord[generated.ModulesOption]] = Nil
             |)""".stripMargin,
         """case class ModuleNode(nodeSequence1: generated.NodeSequence,
           |  uniquename: String,
@@ -75,14 +76,22 @@ lazy val root = project
         """case class ModuleNode(nodeSequence1: generated.NodeSequence,
           |  uniquename: String,
           |  extendsValue: generated.Extends,
-          |  modulenode: Seq[scalaxb.DataRecord[generated.AssumeNodeRef | generated.InstanceNode | generated.UseOrHideNode | generated.OpDeclNodeRef |  generated.OpDefNodeRefOption | generated.TheoremNodeRef]] = Nil) extends ModulesOption with EntryOption""".stripMargin
+          |  modulenode: Seq[scalaxb.DataRecord[ ArgumentOption with OperatorOption with ModuleNodeOption with generated.OpDefNodeRefOption] = Nil) extends ModulesOption with EntryOption""".stripMargin
+
+      )
+
+      val replacements3 = Seq(
+        "__obj.modules flatMap { scalaxb.toXML[generated.Modules](_, None, Some(\"modules\"), __scope, false) })" ->
+        "__obj.modules flatMap {\n          case x: generated.Modules => scalaxb.toXML[generated.Modules](x, None, Some(\"modules\"), __scope, false)\n          case x: scalaxb.DataRecord[generated.ModulesOption] => scalaxb.toXML[scalaxb.DataRecord[generated.ModulesOption]](x, x.namespace, x.key, __scope, false)\n        })",
+        "__obj.modulenode flatMap { scalaxb.toXML[generated.ModuleNode](_, None, Some(\"modulenode\"), __scope, false) })" ->
+        "__obj.modulenode flatMap { x => scalaxb.toXML[scalaxb.DataRecord[Any]](x, x.namespace, x.key, __scope, false) } )"
       )
 
       files.foreach { f =>
         val s0 = IO.read(f)
-        val s1 = (replacements ++ replacements2).foldLeft(s0) { case (acc, (from, to)) =>
-          acc.replace(from, to)
-        }
+      val s1 = (replacements ++ replacements2 ++ replacements3).foldLeft(s0) { case (acc, (from, to)) =>
+        acc.replace(from, to)
+      }
         if (s0 != s1) IO.write(f, s1)
       }
 
